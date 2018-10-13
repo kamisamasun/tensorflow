@@ -22,6 +22,7 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "tensorflow/compiler/xla/service/backend.h"
 #include "tensorflow/compiler/xla/statusor.h"
 #include "tensorflow/compiler/xla/types.h"
@@ -76,10 +77,7 @@ class AllocationTracker {
   // Data structure encapsulating single memory allocation on the device.
   struct Allocation {
     // The pointer to this allocation.
-    se::DeviceMemoryBase device_memory;
-
-    // The device that the memory is allocated on.
-    int device_ordinal;
+    OwningDeviceMemory device_memory;
 
     // This is the number of times this memory allocation is referred to by
     // registered data handles.
@@ -113,7 +111,7 @@ class AllocationTracker {
 
   // A map from device memory opaque value to allocation. One such map is
   // maintained per device ordinal.
-  using AllocationMap = tensorflow::gtl::FlatMap<const void*, Allocation>;
+  using AllocationMap = absl::flat_hash_map<const void*, Allocation>;
 
   tensorflow::mutex mutex_;
 
@@ -126,7 +124,10 @@ class AllocationTracker {
   int64 next_handle_ GUARDED_BY(mutex_);
 
   // A map from device ordinal to AllocationMap.
-  tensorflow::gtl::FlatMap<int, AllocationMap> opaque_to_allocation_map_
+  //
+  // This is not a TF FlatMap because (currently) FlatMap (and therefore
+  // AllocationMap) is not movable.
+  std::unordered_map<int, AllocationMap> opaque_to_allocation_map_
       GUARDED_BY(mutex_);
 
   // A map from data handle to a vector of shaped buffers that represent the
@@ -146,7 +147,7 @@ class AllocationTracker {
   // non-owning "view" into a tuple's sub-buffers.  The sub-buffers are then
   // free'd when both the view *and* the original tuple are Unregistered.  This
   // refcounting is managed in opaque_to_allocation_map_.
-  tensorflow::gtl::FlatMap<int64, std::vector<std::unique_ptr<ShapedBuffer>>>
+  absl::flat_hash_map<int64, std::vector<std::unique_ptr<ShapedBuffer>>>
       handle_to_shaped_buffers_ GUARDED_BY(mutex_);
 
   TF_DISALLOW_COPY_AND_ASSIGN(AllocationTracker);

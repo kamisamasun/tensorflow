@@ -83,14 +83,28 @@ TEST(ProfilingTest, ProfilesAreCollected) {
   EXPECT_EQ("SleepForQuarter", profile_events[4]->tag);
 
 #ifndef ADDRESS_SANITIZER
-  // ASAN build is sometimes very slow.
-  const int eps_ms = 10;
+  // ASAN build is sometimes very slow. Set a large epsilon to avoid flakiness.
+  const int eps_ms = 50;
   AssertDurationOfEventAroundMs(profile_events[0], /*expected_ms*/ 500, eps_ms);
   AssertDurationOfEventAroundMs(profile_events[1], /*expected_ms*/ 250, eps_ms);
   AssertDurationOfEventAroundMs(profile_events[2], /*expected_ms*/ 250, eps_ms);
   AssertDurationOfEventAroundMs(profile_events[3], /*expected_ms*/ 250, eps_ms);
   AssertDurationOfEventAroundMs(profile_events[4], /*expected_ms*/ 250, eps_ms);
 #endif
+}
+
+TEST(ProfilingTest, NullProfiler) {
+  Profiler* profiler = nullptr;
+  { SCOPED_OPERATOR_PROFILE(profiler, 1); }
+}
+
+TEST(ProfilingTest, ScopedProfile) {
+  Profiler profiler;
+  profiler.StartProfiling();
+  { SCOPED_OPERATOR_PROFILE(&profiler, 1); }
+  profiler.StopProfiling();
+  auto profile_events = profiler.GetProfileEvents();
+  EXPECT_EQ(1, profile_events.size());
 }
 
 }  // namespace

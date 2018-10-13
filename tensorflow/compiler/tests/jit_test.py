@@ -29,13 +29,11 @@ from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import function
 from tensorflow.python.framework import ops
-from tensorflow.python.layers import layers
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import gradients_impl
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_ops
-from tensorflow.python.ops import variables
 from tensorflow.python.platform import test
 
 jit_scope = jit.experimental_jit_scope
@@ -79,11 +77,11 @@ def InLabels(labels, substr):
   return any([substr in x for x in labels])
 
 
-def MetadataHasXlaLaunch(run_metadata):
-  """Returns true if there is a _XlaLaunch kernel in run_metadata's timeline."""
+def MetadataHasXlaOp(run_metadata):
+  """Returns true if there are XlaRun kernels in run_metadata's timeline."""
 
   # TODO(phawkins): find a less hacky way to test whether a kernel ran.
-  return InLabels(RunMetadataLabels(run_metadata), "_XlaLaunch")
+  return InLabels(RunMetadataLabels(run_metadata), "XlaRun")
 
 
 class JitLaunchTest(test.TestCase):
@@ -92,9 +90,10 @@ class JitLaunchTest(test.TestCase):
   # Verifies that the outputs match and that XLA was invoked. 'fn' must take
   # the same number of tensors as arguments that are in 'args', and must return
   # a tuple of output tensors.
-  # If 'require_kernel_launch' is True, then we verify that a _XlaLaunch node
-  # actually ran. However, it is sometimes possible for _XlaLaunch ops to be
-  # constant-folded away, so the check is optional.
+  #
+  # If 'require_kernel_launch' is True, then we verify that an XlaCompile/XlaRun
+  # node actually ran. However, it is sometimes possible for XlaCompile/XlaRun
+  # ops to be constant-folded away, so the check is optional.
   def _compare(self, fn, args, require_kernel_launch=True, noinline=None):
     with session_lib.Session(config=NoRewriteSessionConfig()) as sess:
       placeholders = []
@@ -117,7 +116,7 @@ class JitLaunchTest(test.TestCase):
       print("Compiled Result {}".format(compiled))
 
       if require_kernel_launch:
-        self.assert_(MetadataHasXlaLaunch(run_metadata))
+        self.assert_(MetadataHasXlaOp(run_metadata))
 
         direct = sess.run(direct_op, feeds)
         print("Direct Result {}".format(direct))
@@ -127,7 +126,7 @@ class JitLaunchTest(test.TestCase):
           for (x, y) in zip(compiled, direct):
             self.assertAllClose(x, y, rtol=1e-1)
         else:
-          self.assertAllClose(compiled, direct)
+          self.assertAllClose(compiled, direct, rtol=1e-2)
 
   def testNoOutputs(self):
     with session_lib.Session() as sess:
@@ -151,10 +150,10 @@ class JitLaunchTest(test.TestCase):
       y = math_ops.add(x, x)
       return y, y
 
-    # Exercises compling a function (say, Foo) which calls another
-    # function (say, Bar) which is not inlined. When the compiler compiles
-    # Foo, it needs to symbolic execute Bar correctly regardless whether
-    # Bar is inlined or not.
+    # Exercises compiling a function (say, Foo) which calls another function
+    # (say, Bar) which is not inlined. When the compiler compiles Foo, it needs
+    # to symbolically execute Bar correctly regardless of whether Bar is inlined
+    # or not.
 
     # TODO(b/36139787): Re-enable this test when noinline works again.
     # Tests compiled=True and noinline=True.
@@ -261,7 +260,7 @@ class JitLaunchTest(test.TestCase):
         # TODO(phawkins): really we would like to test that there were exactly
         # two kernel launches. However, we have no reliable way to determine
         # that.
-        self.assert_(MetadataHasXlaLaunch(run_metadata))
+        self.assert_(MetadataHasXlaOp(run_metadata))
 
         expected = np.square(np.dot(dx, dw) + db)
         self.assertAllClose(expected, output, rtol=1e-1)
@@ -291,7 +290,7 @@ class XlaCompilationTest(test.TestCase):
                      run_metadata=run_metadata,
                      options=config_pb2.RunOptions(
                          trace_level=config_pb2.RunOptions.FULL_TRACE))
-      self.assert_(MetadataHasXlaLaunch(run_metadata))
+      self.assert_(MetadataHasXlaOp(run_metadata))
       self.assertAllClose(np.array([[1, 2, 3], [4, 5, 6]], np.float32), out)
 
   def testIgnoredArguments(self):
@@ -315,7 +314,7 @@ class XlaCompilationTest(test.TestCase):
                      run_metadata=run_metadata,
                      options=config_pb2.RunOptions(
                          trace_level=config_pb2.RunOptions.FULL_TRACE))
-      self.assert_(MetadataHasXlaLaunch(run_metadata))
+      self.assert_(MetadataHasXlaOp(run_metadata))
       self.assertAllClose(28, out)
 
   def testLoops(self):
@@ -333,7 +332,7 @@ class XlaCompilationTest(test.TestCase):
                            run_metadata=run_metadata,
                            options=config_pb2.RunOptions(
                                trace_level=config_pb2.RunOptions.FULL_TRACE))
-      self.assert_(MetadataHasXlaLaunch(run_metadata))
+      self.assert_(MetadataHasXlaOp(run_metadata))
       self.assertAllClose(result, np.float32(95), rtol=1e-1)
 
   def testCond(self):
@@ -358,7 +357,7 @@ class XlaCompilationTest(test.TestCase):
                            run_metadata=run_metadata,
                            options=config_pb2.RunOptions(
                                trace_level=config_pb2.RunOptions.FULL_TRACE))
-      self.assert_(MetadataHasXlaLaunch(run_metadata))
+      self.assert_(MetadataHasXlaOp(run_metadata))
       self.assertAllClose(result, np.float32(6), rtol=1e-1)
 
   def testNestedFunction(self):
@@ -443,31 +442,16 @@ class XlaCompilationTest(test.TestCase):
     self.assertFalse(InLabels(labels, "Log"))
     self.assertTrue(InLabels(labels, "Reciprocal"))
     self.assertTrue(InLabels(labels, "Mul"))
-    self.assertFalse(InLabels(labels, "_XlaLaunch"))
+    self.assertFalse(InLabels(labels, "XlaCompile"))
+    self.assertFalse(InLabels(labels, "XlaRun"))
 
-    # Compile the backprop. One _XlaLaunch.
+    # Compile the backprop. One XlaCompile/XlaRun pair.
     labels = _Run(compiled=True)
     self.assertFalse(InLabels(labels, "Log"))
     self.assertFalse(InLabels(labels, "Reciprocal"))
     self.assertFalse(InLabels(labels, "Mul"))
-    self.assertTrue(InLabels(labels, "_XlaLaunch"))
-
-  def testDenseLayer(self):
-    """Tests that the dense layer node is properly compiled."""
-
-    with self.test_session(config=NoRewriteSessionConfig()) as sess:
-      x = array_ops.placeholder(shape=[2, 3], dtype=np.float32)
-      with jit_scope():
-        y = layers.dense(x, 3)
-
-      sess.run(variables.initialize_all_variables())
-      run_metadata = config_pb2.RunMetadata()
-      sess.run(y, {x: np.array([[1, 2, 3], [4, 5, 6]])},
-               run_metadata=run_metadata,
-               options=config_pb2.RunOptions(
-                   trace_level=config_pb2.RunOptions.FULL_TRACE))
-
-    self.assert_(MetadataHasXlaLaunch(run_metadata))
+    self.assertTrue(InLabels(labels, "XlaCompile"))
+    self.assertTrue(InLabels(labels, "XlaRun"))
 
 
 class ElementWiseFusionTest(test.TestCase):
@@ -501,15 +485,19 @@ class ElementWiseFusionTest(test.TestCase):
               trace_level=config_pb2.RunOptions.FULL_TRACE))
 
       labels = RunMetadataLabels(run_metadata)
-      count = sum("_XlaLaunch(" in x for x in labels)
 
-      return output, count
+      xla_compile_count = sum("XlaCompile(" in x for x in labels)
+      xla_run_count = sum("XlaRun(" in x for x in labels)
+      self.assertEqual(xla_compile_count, xla_run_count)
+
+      return output, xla_run_count
 
   def testElementWiseClustering(self):
     arg0 = np.random.rand(2, 2).astype(np.float32)
     arg1 = np.random.rand(2, 2).astype(np.float32)
-    os.environ["TF_XLA_FLAGS"] = ("--tf_xla_fusion_only=true "
-                                  "--tf_xla_cpu_global_jit")
+    os.environ["TF_XLA_FLAGS"] = (
+        "--tf_xla_fusion_only=true "
+        "--tf_xla_cpu_global_jit " + os.environ.get("TF_XLA_FLAGS", ""))
     tf_op, tf_count = self.simpleTest(arg0, arg1,
                                       config_pb2.OptimizerOptions.OFF)
     self.assertEqual(0, tf_count)
